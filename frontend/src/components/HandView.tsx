@@ -7,7 +7,7 @@ interface Props {
   label?: string;
   active?: boolean;
   result?: string | null;
-  dealDelay?: number; // seconds — offsets ALL cards in this hand (for sequential multi-hand deals)
+  dealDelay?: number;
 }
 
 const BADGE: Record<string, string> = {
@@ -15,7 +15,7 @@ const BADGE: Record<string, string> = {
 };
 
 export default function HandView({ cards, label, active, result, dealDelay = 0 }: Props) {
-  const visible = cards.filter(c => !c.faceDown);
+  const visible = cards.filter(c => !c.face_down);
   const display = visible.length ? getHandDisplay(cards) : null;
   const isSoftDisplay = display?.includes('/') ?? false;
 
@@ -36,7 +36,6 @@ export default function HandView({ cards, label, active, result, dealDelay = 0 }
           )}
         </div>
       )}
-      {/* --delay-offset shifts all nth-child delays so dealer cards come after player cards */}
       <div
         className="hv-cards"
         style={{ '--delay-offset': `${dealDelay}s` } as React.CSSProperties}

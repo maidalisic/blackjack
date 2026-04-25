@@ -7,7 +7,7 @@ const SUIT_SYMBOL: Record<string, string> = {
 interface Props { card: Card }
 
 export default function CardView({ card }: Props) {
-  if (card.faceDown) {
+  if (card.face_down) {
     return (
       <div className="card-wrap">
         <div className="card card-back" />

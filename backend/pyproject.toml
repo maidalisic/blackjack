@@ -1,0 +1,10 @@
+[project]
+name = "blackjack-backend"
+version = "1.0.0"
+requires-python = ">=3.12"
+dependencies = [
+    "fastapi==0.115.6",
+    "uvicorn[standard]==0.32.1",
+    "python-multipart==0.0.20",
+    "websockets==14.1",
+]

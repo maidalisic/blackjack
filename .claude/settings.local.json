@@ -2,7 +2,10 @@
   "permissions": {
     "allow": [
       "Bash(npx tsc *)",
-      "Bash(curl -s http://localhost:5174)"
+      "Bash(curl -s http://localhost:5174)",
+      "Bash(uv run *)",
+      "Bash(curl -s http://localhost:8001/docs)",
+      "Bash(npm run *)"
     ]
   }
 }
