@@ -1,0 +1,30 @@
+name: CI
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Repo auschecken
+        uses: actions/checkout@v4
+
+      - name: Node installieren
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: 'npm'
+
+      - name: Dependencies installieren
+        run: npm ci
+
+      - name: Build ausführen
+        run: npm run build
+
+      - name: (Optional) Lint check
+        run: npm run lint
+        continue-on-error: true
