@@ -1,0 +1,13 @@
+*, *::before, *::after { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  padding: 0;
+  background: #07090f;
+  font-family: 'Segoe UI', system-ui, sans-serif;
+}
+
+#root {
+  width: 100%;
+  min-height: 100svh;
+}
