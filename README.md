@@ -15,7 +15,7 @@ Multiplayer Blackjack in the browser — up to 5 players per table, real-time ov
 ## Tech Stack
 
 | Layer | Technology |
-|---|---|
+| --- | --- |
 | Frontend | React 19, TypeScript, Vite |
 | Backend | Python 3.12, FastAPI, WebSockets |
 | Package managers | npm (frontend), uv (backend) |
@@ -32,22 +32,32 @@ Multiplayer Blackjack in the browser — up to 5 players per table, real-time ov
 
 ### Quick start
 
+#### macOS / Linux
+
 ```bash
 ./start.sh
 ```
 
-The script starts the backend (port 8001) and frontend (port 5174) together and prints the local and LAN addresses.
+#### Windows
 
+```bat
+start.bat
 ```
-┌─────────────────────────────────────────────┐
-│            Blackjack — running               │
-├─────────────────────────────────────────────┤
-│  Local:    http://localhost:5174             │
-│  Network:  http://192.168.x.x:5174          │
-│  Backend:  http://localhost:8001             │
-├─────────────────────────────────────────────┤
-│  Press  Q + Enter  to quit                  │
-└─────────────────────────────────────────────┘
+
+Both scripts start the backend (port 8001) and frontend (port 5174) together and print the local and LAN addresses.
+
+```text
++---------------------------------------------+
+|           Blackjack -- running              |
++---------------------------------------------+
+|  Local:    http://localhost:5174            |
+|  Network:  http://192.168.x.x:5174         |
+|  Backend:  http://localhost:8001            |
++---------------------------------------------+
+|  Admin:    http://localhost:5174/admin      |
++---------------------------------------------+
+|  Press  Q + Enter  to quit                 |
++---------------------------------------------+
 ```
 
 Mobile devices on the same Wi-Fi can join via the Network URL.
@@ -68,7 +78,7 @@ npm run dev
 
 ## Project Structure
 
-```
+```text
 blackjack/
 ├── backend/
 │   ├── main.py          # FastAPI app, WebSocket handlers, game state
@@ -88,7 +98,8 @@ blackjack/
 ├── .github/
 │   └── workflows/
 │       └── ci.yml       # Build + lint (frontend) & syntax check (backend)
-├── start.sh             # Local dev launcher
+├── start.sh             # Local dev launcher (macOS / Linux)
+├── start.bat            # Local dev launcher (Windows)
 └── render.yaml          # Render.com deployment config
 ```
 
@@ -105,7 +116,7 @@ blackjack/
 
 The repo is pre-configured for Render.com via `render.yaml`. The frontend is compiled into `backend/static/` during the build and served as static files by the FastAPI backend — no separate frontend service needed.
 
-```
+```bash
 Build:  pip install uv && uv sync && cd ../frontend && npm install && npm run build
 Start:  uv run uvicorn main:app --host 0.0.0.0 --port $PORT
 ```
