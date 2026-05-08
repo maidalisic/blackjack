@@ -37,7 +37,7 @@ export interface SideBetResults {
   insurance: SideBetEntry | null;
 }
 
-export type PlayerStatus = 'waiting' | 'betting' | 'waiting_turn' | 'playing' | 'done' | 'result';
+export type PlayerStatus = 'waiting' | 'betting' | 'waiting_turn' | 'playing' | 'done' | 'result' | 'spectating';
 
 export interface PlayerState {
   player_id: string;

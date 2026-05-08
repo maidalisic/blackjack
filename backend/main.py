@@ -309,16 +309,18 @@ def resolve_insurance(room: dict):
 
 
 def reset_for_new_round(room: dict):
-    # Remove broke players
-    broke = [pid for pid, p in room['players'].items() if p['balance'] <= 0]
-    for pid in broke:
-        room['players'].pop(pid, None)
-        room['player_order'] = [p for p in room['player_order'] if p != pid]
-        room['connections'].pop(pid, None)
+    # Players with no money stay in the room as spectators instead of being kicked
+    for pid, p in room['players'].items():
+        if p['balance'] <= 0:
+            p['status'] = 'spectating'
+            room['player_order'] = [x for x in room['player_order'] if x != pid]
+    # Connections are kept so they can still receive updates and chat
 
-    # Reassign host if original host was broke
-    if room['host_id'] not in room['players'] and room['player_order']:
-        room['host_id'] = room['player_order'][0]
+    # Transfer host if they left or went broke (spectating hosts can't start rounds)
+    if room['player_order']:
+        host = room['players'].get(room['host_id'])
+        if not host or host['status'] == 'spectating':
+            room['host_id'] = room['player_order'][0]
 
     room['phase'] = 'betting'
     room['dealer_hand'] = []
@@ -327,6 +329,8 @@ def reset_for_new_round(room: dict):
     room['betting_started_at'] = time.time()
 
     for p in room['players'].values():
+        if p['status'] == 'spectating':
+            continue  # don't reset spectating players
         p['status'] = 'betting'
         p['ready'] = False
         p['current_bet'] = 0
@@ -337,31 +341,37 @@ def reset_for_new_round(room: dict):
         p['insurance_done'] = False
 
 
-def remove_player(room: dict, pid: str):
-    """Remove a player and fix room state. Returns True if room still has players."""
+def remove_player(room: dict, pid: str) -> bool:
+    """Remove a player and fix room state. Returns True if room still has active players."""
+    old_order = room['player_order']
+    old_active_index = room['active_player_index']
+    removed_idx = next((i for i, p_id in enumerate(old_order) if p_id == pid), -1)
+
     was_active = (
         room['phase'] == 'playing'
-        and room['player_order']
-        and room['active_player_index'] < len(room['player_order'])
-        and room['player_order'][room['active_player_index']] == pid
+        and removed_idx != -1
+        and removed_idx == old_active_index
     )
 
     room['players'].pop(pid, None)
-    room['player_order'] = [p for p in room['player_order'] if p != pid]
+    room['player_order'] = [p for p in old_order if p != pid]
     room['connections'].pop(pid, None)
 
-    if not room['players']:
+    # Close room when no players at all, or only spectators remain (can't play alone)
+    if not room['players'] or not room['player_order']:
         return False
 
-    if room['host_id'] == pid and room['player_order']:
+    if room['host_id'] == pid:
         room['host_id'] = room['player_order'][0]
 
     if room['phase'] == 'playing':
-        room['active_player_index'] = min(
-            room['active_player_index'], max(0, len(room['player_order']) - 1)
-        )
         if was_active:
+            # Set index one before the removed slot so advance_turn scans from that slot onward
+            room['active_player_index'] = old_active_index - 1
             advance_turn(room)
+        elif removed_idx != -1 and removed_idx < old_active_index:
+            # A player before the active one was removed — shift the index down
+            room['active_player_index'] = old_active_index - 1
 
     if room['phase'] == 'betting' and all_ready(room):
         cancel_betting_timer(room)
@@ -663,6 +673,30 @@ async def websocket_endpoint(ws: WebSocket):
                 start_betting_timer(room_id)
                 await broadcast_state(room)
 
+            # ── chat ─────────────────────────────────────────────────────────
+            elif t == 'chat':
+                if not room_id or room_id not in rooms or not player_id:
+                    continue
+                room = rooms[room_id]
+                p = room['players'].get(player_id)
+                if not p:
+                    continue
+                text = str(data.get('text', ''))[:200].strip()
+                if text:
+                    chat_msg = {
+                        'type': 'chat',
+                        'player_name': p['name'],
+                        'player_id': player_id,
+                        'text': text,
+                        'ts': time.time(),
+                    }
+                    for conn in list(room['connections'].values()):
+                        try: await conn.send_json(chat_msg)
+                        except: pass
+                    for conn in list(room.get('spectators', {}).values()):
+                        try: await conn.send_json(chat_msg)
+                        except: pass
+
             # ── leave_room ───────────────────────────────────────────────────
             elif t == 'leave_room':
                 if not room_id or room_id not in rooms or not player_id:
@@ -691,6 +725,16 @@ async def websocket_endpoint(ws: WebSocket):
             # But if no connections left, keep room alive for a bit
 
 
+async def broadcast_closed(room: dict):
+    msg = {'type': 'room_closed', 'message': 'Room was closed by admin.'}
+    for ws in list(room['connections'].values()):
+        try: await ws.send_json(msg)
+        except: pass
+    for ws in list(room.get('spectators', {}).values()):
+        try: await ws.send_json(msg)
+        except: pass
+
+
 # ── admin REST endpoint ───────────────────────────────────────────────────────
 
 @app.get('/api/rooms')
@@ -705,11 +749,51 @@ async def get_rooms():
             'starting_balance': room['starting_balance'],
             'spectator_count': len(room.get('spectators', {})),
             'players': [
-                {'name': p['name'], 'balance': p['balance'], 'status': p['status']}
-                for p in room['players'].values()
+                {'player_id': pid, 'name': p['name'], 'balance': p['balance'], 'status': p['status']}
+                for pid, p in room['players'].items()
             ],
         })
     return {'rooms': result}
+
+
+@app.delete('/api/rooms/{room_id}/players/{player_id}')
+async def kick_player(room_id: str, player_id: str):
+    rid = room_id.upper()
+    if rid not in rooms:
+        return {'ok': False, 'message': 'Room not found.'}
+    room = rooms[rid]
+    if player_id not in room['players']:
+        return {'ok': False, 'message': 'Player not found.'}
+
+    kicked_ws = room['connections'].get(player_id)
+    if kicked_ws:
+        try:
+            await kicked_ws.send_json({'type': 'kicked', 'message': 'You were removed by the admin.'})
+        except Exception:
+            pass
+
+    still_alive = remove_player(room, player_id)
+    if not still_alive:
+        cancel_betting_timer(room)
+        await broadcast_closed(room)
+        rooms.pop(rid, None)
+    else:
+        if room['phase'] == 'betting':
+            room['betting_started_at'] = time.time()
+            start_betting_timer(rid)
+        await broadcast_state(room)
+    return {'ok': True}
+
+
+@app.delete('/api/rooms/{room_id}')
+async def close_room(room_id: str):
+    rid = room_id.upper()
+    if rid not in rooms:
+        return {'ok': False, 'message': 'Room not found.'}
+    room = rooms.pop(rid)
+    cancel_betting_timer(room)
+    await broadcast_closed(room)
+    return {'ok': True}
 
 
 # ── spectator websocket ───────────────────────────────────────────────────────
