@@ -56,6 +56,8 @@ export interface PlayerState {
 export interface RoomState {
   room_id: string;
   host_id: string;
+  max_players?: number;
+  starting_balance?: number;
   players: Record<string, PlayerState>;
   player_order: string[];
   dealer_hand: Card[];

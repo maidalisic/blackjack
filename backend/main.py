@@ -7,12 +7,12 @@ from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
 from game import (
-    build_deck, is_bust, is_blackjack, can_split, can_double,
+    build_deck, hand_value, is_bust, is_blackjack, can_split, can_double,
     dealer_should_hit, resolve_hand, settle_payout, resolve_side_bets,
 )
 
-STARTING_BALANCE = 10_000
-MAX_PLAYERS = 5
+DEFAULT_STARTING_BALANCE = 10_000
+DEFAULT_MAX_PLAYERS = 5
 BETTING_DURATION = 25  # seconds
 
 app = FastAPI()
@@ -25,11 +25,11 @@ def empty_hand(bet: int) -> dict:
     return {'cards': [], 'bet': bet, 'doubled': False, 'stood': False, 'result': None}
 
 
-def make_player(player_id: str, name: str) -> dict:
+def make_player(player_id: str, name: str, starting_balance: int = DEFAULT_STARTING_BALANCE) -> dict:
     return {
         'player_id': player_id,
         'name': name,
-        'balance': STARTING_BALANCE,
+        'balance': starting_balance,
         'current_bet': 0,
         'side_bets': {'perfect_pairs': 0, 'twenty_one_plus_three': 0, 'insurance': 0},
         'player_hands': [empty_hand(0)],
@@ -41,10 +41,12 @@ def make_player(player_id: str, name: str) -> dict:
     }
 
 
-def make_room(host_id: str, room_id: str) -> dict:
+def make_room(host_id: str, room_id: str, max_players: int = DEFAULT_MAX_PLAYERS, starting_balance: int = DEFAULT_STARTING_BALANCE) -> dict:
     return {
         'room_id': room_id,
         'host_id': host_id,
+        'max_players': max_players,
+        'starting_balance': starting_balance,
         'players': {},
         'player_order': [],
         'dealer_hand': [],
@@ -53,6 +55,7 @@ def make_room(host_id: str, room_id: str) -> dict:
         'active_player_index': 0,
         'message': 'Waiting for players to join…',
         'connections': {},
+        'spectators': {},
         'timer_task': None,
         'betting_started_at': 0.0,
     }
@@ -92,6 +95,8 @@ def serialize_room(room: dict) -> dict:
     return {
         'room_id': room['room_id'],
         'host_id': room['host_id'],
+        'max_players': room['max_players'],
+        'starting_balance': room['starting_balance'],
         'players': players_out,
         'player_order': room['player_order'],
         'dealer_hand': room['dealer_hand'],
@@ -103,18 +108,24 @@ def serialize_room(room: dict) -> dict:
 
 
 async def broadcast_state(room: dict):
+    state = serialize_room(room)
     dead = []
     for pid, ws in list(room['connections'].items()):
         try:
-            await ws.send_json({
-                'type': 'game_update',
-                'state': serialize_room(room),
-                'your_id': pid,
-            })
+            await ws.send_json({'type': 'game_update', 'state': state, 'your_id': pid})
         except Exception:
             dead.append(pid)
     for pid in dead:
         room['connections'].pop(pid, None)
+
+    dead_spec = []
+    for sid, ws in list(room.get('spectators', {}).items()):
+        try:
+            await ws.send_json({'type': 'game_update', 'state': state})
+        except Exception:
+            dead_spec.append(sid)
+    for sid in dead_spec:
+        room['spectators'].pop(sid, None)
 
 
 async def send_error(ws: WebSocket, message: str):
@@ -383,9 +394,11 @@ async def websocket_endpoint(ws: WebSocket):
                 player_name = str(data.get('player_name', 'Player 1'))[:20].strip() or 'Player 1'
                 player_id = str(uuid.uuid4())[:8]
                 room_id = str(uuid.uuid4())[:6].upper()
+                max_players = max(1, min(7, int(data.get('max_players', DEFAULT_MAX_PLAYERS))))
+                starting_balance = max(500, min(50_000, int(data.get('starting_balance', DEFAULT_STARTING_BALANCE))))
 
-                room = make_room(player_id, room_id)
-                room['players'][player_id] = make_player(player_id, player_name)
+                room = make_room(player_id, room_id, max_players, starting_balance)
+                room['players'][player_id] = make_player(player_id, player_name, starting_balance)
                 room['player_order'].append(player_id)
                 room['connections'][player_id] = ws
                 rooms[room_id] = room
@@ -407,8 +420,8 @@ async def websocket_endpoint(ws: WebSocket):
                     await send_error(ws, 'Room not found.')
                     continue
                 room = rooms[join_id]
-                if len(room['players']) >= MAX_PLAYERS:
-                    await send_error(ws, 'Room is full (max 5 players).')
+                if len(room['players']) >= room['max_players']:
+                    await send_error(ws, f"Room is full (max {room['max_players']} players).")
                     continue
                 if room['phase'] == 'playing':
                     await send_error(ws, 'Game already in progress.')
@@ -416,7 +429,7 @@ async def websocket_endpoint(ws: WebSocket):
 
                 player_id = str(uuid.uuid4())[:8]
                 room_id = join_id
-                room['players'][player_id] = make_player(player_id, player_name)
+                room['players'][player_id] = make_player(player_id, player_name, room['starting_balance'])
                 room['player_order'].append(player_id)
                 room['connections'][player_id] = ws
 
@@ -551,6 +564,9 @@ async def websocket_endpoint(ws: WebSocket):
                 if is_bust(hand['cards']):
                     hand['result'] = 'bust'
                     advance_player_hand(room, player_id)
+                elif hand_value(hand['cards']) == 21:
+                    hand['stood'] = True
+                    advance_player_hand(room, player_id)
                 else:
                     is_split_ace = (
                         len(p['player_hands']) > 1
@@ -626,7 +642,13 @@ async def websocket_endpoint(ws: WebSocket):
                 h2 = {'cards': [hand['cards'][1], c2], 'bet': hand['bet'],
                        'doubled': False, 'stood': False, 'result': None, 'is_split': True}
                 p['balance'] -= hand['bet']
+                if hand_value(h1['cards']) == 21:
+                    h1['stood'] = True
+                if hand_value(h2['cards']) == 21:
+                    h2['stood'] = True
                 p['player_hands'] = p['player_hands'][:hi] + [h1, h2] + p['player_hands'][hi + 1:]
+                if p['player_hands'][p['active_hand_index']]['stood']:
+                    advance_player_hand(room, player_id)
                 await broadcast_state(room)
 
             # ── new_round ────────────────────────────────────────────────────
@@ -667,6 +689,65 @@ async def websocket_endpoint(ws: WebSocket):
             room['connections'].pop(player_id, None)
             # Don't remove player on disconnect — they can reconnect
             # But if no connections left, keep room alive for a bit
+
+
+# ── admin REST endpoint ───────────────────────────────────────────────────────
+
+@app.get('/api/rooms')
+async def get_rooms():
+    result = []
+    for room_id, room in rooms.items():
+        result.append({
+            'room_id': room_id,
+            'phase': room['phase'],
+            'player_count': len(room['players']),
+            'max_players': room['max_players'],
+            'starting_balance': room['starting_balance'],
+            'spectator_count': len(room.get('spectators', {})),
+            'players': [
+                {'name': p['name'], 'balance': p['balance'], 'status': p['status']}
+                for p in room['players'].values()
+            ],
+        })
+    return {'rooms': result}
+
+
+# ── spectator websocket ───────────────────────────────────────────────────────
+
+@app.websocket('/ws/spectate')
+async def spectate_endpoint(ws: WebSocket):
+    await ws.accept()
+    spectator_id: str | None = None
+    room_id: str | None = None
+
+    try:
+        data = await ws.receive_json()
+        if data.get('type') != 'spectate_room':
+            await ws.close()
+            return
+
+        rid = str(data.get('room_id', '')).upper().strip()
+        if rid not in rooms:
+            await ws.send_json({'type': 'error', 'message': 'Room not found.'})
+            await ws.close()
+            return
+
+        spectator_id = str(uuid.uuid4())[:8]
+        room_id = rid
+        room = rooms[room_id]
+        room['spectators'][spectator_id] = ws
+
+        await ws.send_json({'type': 'spectate_joined', 'state': serialize_room(room)})
+
+        # Hold connection open; drain any messages (spectators can't act)
+        while True:
+            await ws.receive_text()
+
+    except WebSocketDisconnect:
+        pass
+    finally:
+        if room_id and room_id in rooms and spectator_id:
+            rooms[room_id]['spectators'].pop(spectator_id, None)
 
 
 # ── static files (production) ─────────────────────────────────────────────────

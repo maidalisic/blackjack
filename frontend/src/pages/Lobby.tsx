@@ -1,17 +1,21 @@
 import { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 
+const BALANCE_OPTIONS = [500, 1_000, 2_500, 5_000, 10_000, 25_000, 50_000];
+
 export default function Lobby() {
   const navigate = useNavigate();
   const [playerName, setPlayerName] = useState('');
   const [roomCode, setRoomCode] = useState('');
   const [tab, setTab] = useState<'create' | 'join'>('create');
   const [error, setError] = useState('');
+  const [maxPlayers, setMaxPlayers] = useState(5);
+  const [startingBalance, setStartingBalance] = useState(10_000);
 
   function handleCreate(e: React.FormEvent) {
     e.preventDefault();
     const name = playerName.trim() || 'Player';
-    navigate('/room', { state: { action: 'create', playerName: name } });
+    navigate('/room', { state: { action: 'create', playerName: name, maxPlayers, startingBalance } });
   }
 
   function handleJoin(e: React.FormEvent) {
@@ -55,6 +59,35 @@ export default function Lobby() {
               onChange={e => setPlayerName(e.target.value)}
             />
           </label>
+
+          {tab === 'create' && (
+            <>
+              <label className="lobby-label">
+                Max Players
+                <select
+                  className="lobby-input lobby-select"
+                  value={maxPlayers}
+                  onChange={e => setMaxPlayers(Number(e.target.value))}
+                >
+                  {[1, 2, 3, 4, 5, 6, 7].map(n => (
+                    <option key={n} value={n}>{n} {n === 1 ? 'player' : 'players'}</option>
+                  ))}
+                </select>
+              </label>
+              <label className="lobby-label">
+                Starting Balance
+                <select
+                  className="lobby-input lobby-select"
+                  value={startingBalance}
+                  onChange={e => setStartingBalance(Number(e.target.value))}
+                >
+                  {BALANCE_OPTIONS.map(v => (
+                    <option key={v} value={v}>${v.toLocaleString()}</option>
+                  ))}
+                </select>
+              </label>
+            </>
+          )}
 
           {tab === 'join' && (
             <label className="lobby-label">

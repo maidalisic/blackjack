@@ -15,11 +15,11 @@ const CHIP_DEFS = [
 ];
 
 const BETTING_DURATION = 25;
+// Deterministic rotations so chips don't spin on re-render
+const CHIP_ROTS = [-8, 5, -13, 3, 11, -5, 9];
 
 function getWsUrl() {
   const proto = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-  // On mobile / LAN, Vite's dev proxy only forwards from localhost.
-  // Connect directly to the backend port so mobile devices work too.
   if (
     import.meta.env.DEV &&
     window.location.hostname !== 'localhost' &&
@@ -57,33 +57,59 @@ function TimerBar({ startedAt }: { startedAt: number }) {
   );
 }
 
-// ── Seat positions ─────────────────────────────────────────────────────────────
+// ── Opponent slots — 5 positions around the felt arc ─────────────────────────
 
-const OTHER_POSITIONS: Record<number, [number, number][]> = {
-  1: [[10, 50]],
-  2: [[18, 26], [18, 74]],
-  3: [[18, 18], [8, 50], [18, 82]],
-  4: [[26, 12], [12, 38], [12, 62], [26, 88]],
+const OPP_SLOTS = [
+  { top: 70, left: 68 },  // near-right
+  { top: 70, left: 32 },  // near-left
+  { top: 46, left: 84 },  // far-right
+  { top: 46, left: 16 },  // far-left
+  { top: 18, left: 68 },  // back-right
+  { top: 18, left: 32 },  // back-left
+];
+
+const OPP_DIST: Record<number, number[]> = {
+  1: [4],
+  2: [4, 5],
+  3: [0, 4, 1],
+  4: [0, 2, 3, 1],
+  5: [0, 2, 4, 5, 3],  // skip near-left, fill right-arc first then left
+  6: [0, 2, 4, 5, 3, 1],
 };
 
-// ── Mini chip stack ───────────────────────────────────────────────────────────
+// ── Table chip stack ──────────────────────────────────────────────────────────
 
-function MiniChips({ amount }: { amount: number }) {
+function TableChipStack({ amount, chipSize = 36 }: { amount: number; chipSize?: number }) {
   if (!amount) return null;
-  const layers: string[] = [];
+  const chips: string[] = [];
   let rem = amount;
   for (const { value, cls } of CHIP_DEFS) {
-    if (rem <= 0 || layers.length >= 5) break;
-    if (rem >= value) {
-      layers.push(cls);
-      rem -= Math.floor(rem / value) * value;
-      if (rem === amount) break;
+    while (rem >= value && chips.length < 7) {
+      chips.push(cls);
+      rem -= value;
     }
   }
+  const step = Math.max(6, Math.round(chipSize * 0.25));
+  const totalH = chipSize + (chips.length - 1) * step;
   return (
-    <div className="mini-chips-stack">
-      {layers.map((cls, i) => (
-        <div key={i} className={`mini-chip-ring ${cls}`} style={{ bottom: i * 4 }} />
+    <div style={{ position: 'relative', width: chipSize, height: totalH, flexShrink: 0 }}>
+      {chips.map((cls, i) => (
+        <div
+          key={i}
+          style={{
+            position: 'absolute',
+            bottom: i * step,
+            left: 0,
+            width: chipSize,
+            height: chipSize,
+            transform: `rotate(${CHIP_ROTS[i % 7]}deg)`,
+          }}
+        >
+          <div
+            className={`tcs-disc ${cls}`}
+            style={{ width: chipSize, height: chipSize, animationDelay: `${i * 55}ms` }}
+          />
+        </div>
       ))}
     </div>
   );
@@ -108,7 +134,7 @@ function PayoutLabel({ result, bet }: { result: HandResult; bet: number }) {
   return null;
 }
 
-// ── Betting box (rectangular, on the felt) ────────────────────────────────────
+// ── Betting box ───────────────────────────────────────────────────────────────
 
 function BettingBox({
   amount, onClick, interactive, result, isDragActive, isDropOver,
@@ -134,7 +160,7 @@ function BettingBox({
       <div className="bb-chips-area">
         {active ? (
           <>
-            <MiniChips amount={amount} />
+            <TableChipStack amount={amount} chipSize={34} />
             <span className="bb-amt">${amount}</span>
           </>
         ) : (
@@ -148,7 +174,7 @@ function BettingBox({
   );
 }
 
-// ── Side bet zone (circular, on the felt) ─────────────────────────────────────
+// ── Side bet zone ─────────────────────────────────────────────────────────────
 
 function SideBetZone({
   label, paysText, amount, onClick, interactive, sbResult, isDragActive, isDropOver,
@@ -174,7 +200,12 @@ function SideBetZone({
     >
       <span className="sbz-label">{label}</span>
       <span className="sbz-pays">{paysText}</span>
-      {active && !hasResult && <span className="sbz-amt">${amount}</span>}
+      {active && !hasResult && (
+        <>
+          <TableChipStack amount={amount} chipSize={22} />
+          <span className="sbz-amt">${amount}</span>
+        </>
+      )}
       {hasResult && (
         <span className={won ? 'sbz-res-win' : 'sbz-res-lose'}>
           {won ? `+$${sbResult!.payout}` : `−$${Math.abs(sbResult!.payout)}`}
@@ -199,16 +230,14 @@ function OpponentSeat({
   return (
     <div
       className={`opp-seat${isActive ? ' opp-seat-active' : ''}`}
-      style={{ position: 'absolute', top: `${top}%`, left: `${left}%`, transform: 'translate(-50%, 0)' }}>
-
+      style={{ position: 'absolute', top: `${top}%`, left: `${left}%`, transform: 'translate(-50%, 0)' }}
+    >
       <div className="opp-name-tag">
         {isHost && <span className="badge-host">HOST</span>}
         <span>{player.name}</span>
         {isActive && <span className="turn-dot" />}
       </div>
-
       <span className="opp-bal">${player.balance.toLocaleString()}</span>
-
       {hasCards && (
         <div className="opp-cards">
           {player.player_hands.map((hand, i) => (
@@ -219,17 +248,12 @@ function OpponentSeat({
           ))}
         </div>
       )}
-
       <div className="opp-bet-row">
-        {player.side_bets.perfect_pairs > 0 && (
-          <div className="opp-sb-dot">PP</div>
-        )}
+        {player.side_bets.perfect_pairs > 0 && <div className="opp-sb-dot">PP</div>}
         <div className={['opp-bet-box', dispBet > 0 ? 'obb-active' : '', resultCls(oppResult)].filter(Boolean).join(' ')}>
           {dispBet > 0 ? <span>${dispBet}</span> : <span className="obb-empty">BET</span>}
         </div>
-        {player.side_bets.twenty_one_plus_three > 0 && (
-          <div className="opp-sb-dot">21+3</div>
-        )}
+        {player.side_bets.twenty_one_plus_three > 0 && <div className="opp-sb-dot">21+3</div>}
       </div>
     </div>
   );
@@ -241,7 +265,9 @@ export default function Room() {
   const { roomId } = useParams<{ roomId?: string }>();
   const location = useLocation();
   const navigate = useNavigate();
-  const locState = location.state as { action?: string; playerName?: string } | null;
+  const locState = location.state as {
+    action?: string; playerName?: string; maxPlayers?: number; startingBalance?: number;
+  } | null;
 
   const wsRef = useRef<WebSocket | null>(null);
   const [myId, setMyId] = useState<string | null>(null);
@@ -251,23 +277,20 @@ export default function Room() {
   const [insuranceAmt, setInsuranceAmt] = useState(0);
   const [selectedChip, setSelectedChip] = useState(25);
 
-  // ── Drag state ─────────────────────────────────────────────────────────────
   const [dragChip, setDragChip] = useState<{ value: number; cls: string } | null>(null);
   const [dragPos, setDragPos]   = useState({ x: 0, y: 0 });
   const [dragOverZone, setDragOverZone] = useState<string | null>(null);
 
-  // Ref-based internals so the drag effect never needs to re-register
   const dragStateRef = useRef<{
     value: number; cls: string; startX: number; startY: number; active: boolean;
   } | null>(null);
-  const meRef       = useRef<PlayerState | undefined>(undefined);
+  const meRef        = useRef<PlayerState | undefined>(undefined);
   const isBettingRef = useRef(false);
 
   const send = useCallback((msg: object) => {
     if (wsRef.current?.readyState === WebSocket.OPEN) wsRef.current.send(JSON.stringify(msg));
   }, []);
 
-  // ── WebSocket ──────────────────────────────────────────────────────────────
   useEffect(() => {
     const playerName = locState?.playerName ?? sessionStorage.getItem('playerName') ?? 'Player';
     sessionStorage.setItem('playerName', playerName);
@@ -275,7 +298,12 @@ export default function Room() {
     wsRef.current = ws;
     ws.onopen = () => {
       if (locState?.action === 'create' || (!roomId && !locState?.action))
-        ws.send(JSON.stringify({ type: 'create_room', player_name: playerName }));
+        ws.send(JSON.stringify({
+          type: 'create_room',
+          player_name: playerName,
+          max_players: locState?.maxPlayers ?? 5,
+          starting_balance: locState?.startingBalance ?? 10_000,
+        }));
       else
         ws.send(JSON.stringify({ type: 'join_room', room_id: roomId ?? '', player_name: playerName }));
     };
@@ -299,7 +327,6 @@ export default function Room() {
     return () => ws.close();
   }, []);
 
-  // ── Drag gesture (pointer events — works on touch + mouse) ────────────────
   useEffect(() => {
     const getZone = (x: number, y: number): string | null => {
       let node: Element | null = document.elementFromPoint(x, y);
@@ -314,7 +341,6 @@ export default function Room() {
     const onMove = (e: PointerEvent) => {
       const ds = dragStateRef.current;
       if (!ds) return;
-      // Activate ghost after 8 px movement threshold
       if (!ds.active) {
         if (Math.hypot(e.clientX - ds.startX, e.clientY - ds.startY) > 8) {
           ds.active = true;
@@ -376,7 +402,6 @@ export default function Room() {
   const { phase, players, player_order, dealer_hand, host_id, active_player_id, message } = gameState;
   const me = players[myId];
 
-  // Keep refs in sync for the drag effect closure
   meRef.current = me;
   isBettingRef.current = phase === 'betting' && me?.status === 'betting' && !(me?.ready);
 
@@ -384,20 +409,19 @@ export default function Room() {
   const isMyTurn = active_player_id === myId;
   const otherIds = player_order.filter(pid => pid !== myId);
 
-  const myActiveHand   = me?.player_hands[me.active_hand_index];
-  const canAct         = phase === 'playing' && isMyTurn && !!myActiveHand;
-  const isBetting      = isBettingRef.current;
+  const myActiveHand    = me?.player_hands[me.active_hand_index];
+  const canAct          = phase === 'playing' && isMyTurn && !!myActiveHand;
+  const isBetting       = isBettingRef.current;
   const insurancePending = phase === 'insurance' && me?.status === 'waiting_turn' && !me?.insurance_done;
-  const maxInsurance   = Math.floor((me?.current_bet ?? 0) / 2);
-  // Show the button when the hand allows it; disable only if funds are short
-  const canDoubleShow  = canAct && canDouble(myActiveHand);
+  const maxInsurance    = Math.floor((me?.current_bet ?? 0) / 2);
+  const canDoubleShow   = canAct && canDouble(myActiveHand);
   const canDoubleActive = canDoubleShow && (myActiveHand?.bet ?? 0) <= (me?.balance ?? 0);
-  const canSplitShow   = canAct && canSplit(myActiveHand, (me?.player_hands.length ?? 1) - 1);
+  const canSplitShow    = canAct && canSplit(myActiveHand, (me?.player_hands.length ?? 1) - 1);
   const canSplitActive  = canSplitShow && (myActiveHand?.bet ?? 0) <= (me?.balance ?? 0);
-  const totalSideBets  = (me?.side_bets.perfect_pairs ?? 0) + (me?.side_bets.twenty_one_plus_three ?? 0);
-  const maxMainBet     = Math.max(0, (me?.balance ?? 0) - totalSideBets);
-  const myHasCards     = (me?.player_hands[0]?.cards.length ?? 0) > 0;
-  const isDragging     = dragChip !== null;
+  const totalSideBets   = (me?.side_bets.perfect_pairs ?? 0) + (me?.side_bets.twenty_one_plus_three ?? 0);
+  const maxMainBet      = Math.max(0, (me?.balance ?? 0) - totalSideBets);
+  const myHasCards      = (me?.player_hands[0]?.cards.length ?? 0) > 0;
+  const isDragging      = dragChip !== null;
 
   const handleMainBet = () => {
     if (!isBetting) return;
@@ -438,7 +462,7 @@ export default function Room() {
               </div>
             ))}
           </div>
-          <p className="lobby-sub">{player_order.length}/5 players</p>
+          <p className="lobby-sub">{player_order.length}/{gameState.max_players ?? 5} players</p>
           <div style={{ display: 'flex', gap: 10 }}>
             {isHost
               ? <button className="btn-deal" style={{ flex: 1 }} onClick={() => send({ type: 'start_game' })}>Start Game</button>
@@ -450,13 +474,30 @@ export default function Room() {
     );
   }
 
-  // ── Game table ─────────────────────────────────────────────────────────────
+  // ── Opponent slot assignment ───────────────────────────────────────────────
 
-  const oppPositions = OTHER_POSITIONS[Math.min(otherIds.length, 4) as keyof typeof OTHER_POSITIONS] ?? [];
+  const oppCount = Math.min(otherIds.length, 6);
+  const slotIndices = OPP_DIST[oppCount] ?? [];
+
+  // ── Game table ─────────────────────────────────────────────────────────────
 
   return (
     <div className="app">
 
+      {/* SVG filter for felt noise texture */}
+      <svg width="0" height="0" style={{ position: 'absolute' }}>
+        <defs>
+          <filter id="felt-noise" x="0%" y="0%" width="100%" height="100%">
+            <feTurbulence type="fractalNoise" baseFrequency="0.75 0.75"
+              numOctaves="4" seed="3" stitchTiles="stitch" result="noise" />
+            <feColorMatrix type="saturate" values="0" in="noise" result="gray" />
+            <feBlend in="SourceGraphic" in2="gray" mode="multiply" result="blended" />
+            <feComposite in="blended" in2="SourceGraphic" operator="in" />
+          </filter>
+        </defs>
+      </svg>
+
+      {/* Header */}
       <header className="hdr">
         <span className="hdr-title">♠ BLACKJACK ♦</span>
         <div style={{ display: 'flex', gap: 18, alignItems: 'center' }}>
@@ -476,7 +517,7 @@ export default function Room() {
 
       <div className="game-body">
 
-        {/* ── Casino table (75%) ───────────────────────────────────────────── */}
+        {/* ── Casino table ──────────────────────────────────────────────────── */}
         <div className="table-wrap">
           <div className="table-rim">
             <div className="casino-table">
@@ -484,26 +525,33 @@ export default function Room() {
               {/* Dealer */}
               <div className="ct-dealer">
                 <span className="felt-zone-lbl">DEALER</span>
-                {dealer_hand.length > 0 ? <HandView cards={dealer_hand} /> : <div className="ct-dealer-empty" />}
+                {dealer_hand.length > 0
+                  ? <HandView cards={dealer_hand} />
+                  : <div className="ct-dealer-empty" />}
               </div>
 
-              {/* Center info */}
+              {/* Center rules + message */}
               <div className="ct-info">
                 <span className="ct-rule-main">BLACKJACK PAYS 3 TO 2</span>
                 <span className="ct-rule-sub">DEALER STANDS ON ALL 17s</span>
-                <div className={`ct-msg${phase === 'result' ? ' ct-msg-result' : ''}`}>{message}</div>
+                {message && (
+                  <div className={`ct-msg${phase === 'result' ? ' ct-msg-result' : ''}`}>
+                    {message}
+                  </div>
+                )}
                 {phase === 'betting' && gameState.betting_started_at > 0 &&
                   <TimerBar startedAt={gameState.betting_started_at} />}
               </div>
 
               {/* Opponent seats */}
               {otherIds.map((pid, i) => {
-                const pos = oppPositions[i];
-                if (!pos || !players[pid]) return null;
+                const slotIdx = slotIndices[i];
+                const slot = OPP_SLOTS[slotIdx];
+                if (slot === undefined || !players[pid]) return null;
                 return (
                   <OpponentSeat key={pid} player={players[pid]}
                     isActive={active_player_id === pid} isHost={host_id === pid}
-                    phase={phase} top={pos[0]} left={pos[1]} />
+                    phase={phase} top={slot.top} left={slot.left} />
                 );
               })}
 
@@ -514,16 +562,31 @@ export default function Room() {
 
                     {myHasCards && (
                       <div className="my-hands-row">
-                        {me.player_hands.map((hand, i) => (
-                          <div key={i} className="my-hand-bet-group">
-                            <HandView
-                              cards={hand.cards}
-                              label={me.player_hands.length > 1 ? `H${i + 1}` : undefined}
-                              active={canAct && i === me.active_hand_index}
-                              result={phase === 'result' ? (hand.result ?? undefined) : undefined}
-                            />
-                          </div>
-                        ))}
+                        {me.player_hands.map((hand, i) => {
+                          const isSplit = me.player_hands.length > 1;
+                          const isActiveHand = canAct && i === me.active_hand_index;
+                          return (
+                            <div key={i} className={[
+                              'my-hand-bet-group',
+                              isSplit ? 'split-group' : '',
+                              isSplit && isActiveHand ? 'split-group-active' : '',
+                            ].filter(Boolean).join(' ')}>
+                              <HandView
+                                cards={hand.cards}
+                                label={isSplit ? `H${i + 1}` : undefined}
+                                active={isActiveHand}
+                                result={phase === 'result' ? (hand.result ?? undefined) : undefined}
+                              />
+                              {/* Bet box inline with hand when split */}
+                              {isSplit && (
+                                <BettingBox
+                                  amount={hand.bet}
+                                  result={phase === 'result' ? (hand.result ?? null) : null}
+                                />
+                              )}
+                            </div>
+                          );
+                        })}
                       </div>
                     )}
 
@@ -544,12 +607,13 @@ export default function Room() {
 
                       <div className="my-main-bets">
                         {myHasCards
-                          ? me.player_hands.map((hand, i) => (
-                              <BettingBox key={i}
-                                amount={hand.bet}
-                                result={phase === 'result' ? (hand.result ?? null) : null}
-                              />
-                            ))
+                          ? (me.player_hands.length === 1
+                              ? <BettingBox
+                                  amount={me.player_hands[0].bet}
+                                  result={phase === 'result' ? (me.player_hands[0].result ?? null) : null}
+                                />
+                              : null /* split: bet boxes live inside each split-group above */
+                            )
                           : <div data-zone="main">
                               <BettingBox
                                 amount={me.current_bet}
@@ -590,104 +654,38 @@ export default function Room() {
           </div>
         </div>
 
-        {/* ── Controls panel (25%) ─────────────────────────────────────────── */}
-        <div className="controls-panel">
-          <div className="controls-inner">
+        {/* ── Chip dock ────────────────────────────────────────────────────── */}
+        <div className="chip-dock">
 
-            {/* Side-bet results */}
-            {phase === 'result' && me?.side_bet_results && (
-              <div className="sidebet-results">
-                {me.side_bet_results.perfect_pairs && (
-                  <span className={me.side_bet_results.perfect_pairs.win ? 'sb-res-win' : 'sb-res-lose'}>
-                    PP: {me.side_bet_results.perfect_pairs.win
-                      ? `+$${me.side_bet_results.perfect_pairs.payout} · ${me.side_bet_results.perfect_pairs.label}`
-                      : `-$${Math.abs(me.side_bet_results.perfect_pairs.payout)}`}
-                  </span>
-                )}
-                {me.side_bet_results.twenty_one_plus_three && (
-                  <span className={me.side_bet_results.twenty_one_plus_three.win ? 'sb-res-win' : 'sb-res-lose'}>
-                    21+3: {me.side_bet_results.twenty_one_plus_three.win
-                      ? `+$${me.side_bet_results.twenty_one_plus_three.payout} · ${me.side_bet_results.twenty_one_plus_three.label}`
-                      : `-$${Math.abs(me.side_bet_results.twenty_one_plus_three.payout)}`}
-                  </span>
-                )}
-                {me.side_bet_results.insurance && (
-                  <span className={me.side_bet_results.insurance.win ? 'sb-res-win' : 'sb-res-lose'}>
-                    Insurance: {me.side_bet_results.insurance.win
-                      ? `+$${me.side_bet_results.insurance.payout}`
-                      : `-$${Math.abs(me.side_bet_results.insurance.payout)}`}
-                  </span>
+          {/* Left zone: phase-specific controls */}
+          <div className="dock-zone dock-left">
+
+            {/* Betting controls */}
+            {isBetting && (
+              <div className="dock-bet-actions">
+                <button className="btn-ghost dock-btn"
+                  onClick={() => { send({ type: 'place_bet', amount: 0 }); send({ type: 'place_side_bet', bet_type: 'perfect_pairs', amount: 0 }); send({ type: 'place_side_bet', bet_type: 'twenty_one_plus_three', amount: 0 }); }}
+                  disabled={(me?.current_bet ?? 0) === 0 && totalSideBets === 0}>
+                  Clear
+                </button>
+                <button className="btn-ready dock-btn"
+                  onClick={() => send({ type: 'set_ready' })}
+                  disabled={(me?.current_bet ?? 0) === 0}>
+                  ✓ Ready
+                </button>
+                {isHost && (
+                  <button className="btn-deal dock-btn"
+                    onClick={() => send({ type: 'deal' })}
+                    disabled={(me?.current_bet ?? 0) === 0}>
+                    Deal
+                  </button>
                 )}
               </div>
             )}
 
-            {/* Insurance */}
-            {insurancePending && (
-              <>
-                <div className="chip-rack-label">Dealer shows Ace<br />Insurance? (max ${maxInsurance})</div>
-                <div className="insurance-row">
-                  <button className="sb-btn" onClick={() => setInsuranceAmt(a => Math.max(0, a - 5))} disabled={insuranceAmt <= 0}>−</button>
-                  <span className="ins-amt">${insuranceAmt}</span>
-                  <button className="sb-btn" onClick={() => setInsuranceAmt(a => Math.min(maxInsurance, a + 5))} disabled={insuranceAmt >= maxInsurance}>+</button>
-                </div>
-                <div className="ctrl-row">
-                  <button className="btn-ghost" onClick={() => { send({ type: 'set_insurance', amount: 0 }); setInsuranceAmt(0); }}>No</button>
-                  <button className="btn-ready" disabled={insuranceAmt === 0}
-                    onClick={() => { send({ type: 'set_insurance', amount: insuranceAmt }); setInsuranceAmt(0); }}>
-                    Insure ${insuranceAmt}
-                  </button>
-                </div>
-              </>
-            )}
-
-            {phase === 'insurance' && !insurancePending && (
-              <p className="waiting-turn-msg">{me?.insurance_done ? 'Waiting for others…' : 'Dealer shows Ace'}</p>
-            )}
-
-            {/* Chip selection */}
-            {isBetting && (
-              <>
-                <div className="chip-rack-label">
-                  Select chip · click or drag to zones
-                </div>
-                <div className="chip-rack chip-rack-grid">
-                  {CHIP_DEFS.map(({ value, cls }) => (
-                    <button key={value}
-                      className={`chip ${cls}${selectedChip === value ? ' chip-selected' : ''}`}
-                      onClick={() => setSelectedChip(value)}
-                      onPointerDown={(e) => {
-                        if (!isBetting) return;
-                        setSelectedChip(value);
-                        dragStateRef.current = {
-                          value, cls,
-                          startX: e.clientX, startY: e.clientY,
-                          active: false,
-                        };
-                      }}
-                      disabled={value > (me?.balance ?? 0)}>
-                      <span className="chip-label">${value}</span>
-                    </button>
-                  ))}
-                </div>
-                <div className="ctrl-row" style={{ marginTop: 4 }}>
-                  <button className="btn-ghost"
-                    onClick={() => send({ type: 'place_bet', amount: 0 })}
-                    disabled={(me?.current_bet ?? 0) === 0}>Clear</button>
-                  <button className="btn-ready"
-                    onClick={() => send({ type: 'set_ready' })}
-                    disabled={(me?.current_bet ?? 0) === 0}>✓ Ready</button>
-                  {isHost && (
-                    <button className="btn-deal"
-                      onClick={() => send({ type: 'deal' })}
-                      disabled={(me?.current_bet ?? 0) === 0}>Deal</button>
-                  )}
-                </div>
-              </>
-            )}
-
             {phase === 'betting' && me?.ready && (
-              <p className="waiting-turn-msg">
-                ✓ Ready — waiting for {player_order.filter(pid => !players[pid]?.ready).length} more…
+              <p className="dock-status">
+                ✓ Ready — {player_order.filter(pid => !players[pid]?.ready).length} waiting
               </p>
             )}
 
@@ -708,26 +706,111 @@ export default function Room() {
             )}
 
             {phase === 'playing' && !isMyTurn && (
-              <p className="waiting-turn-msg">
+              <p className="dock-status">
                 {active_player_id
-                  ? `Waiting for ${players[active_player_id]?.name ?? '…'}…`
+                  ? `${players[active_player_id]?.name ?? '…'}'s turn`
                   : 'Dealer is playing…'}
               </p>
             )}
 
+            {/* Insurance */}
+            {insurancePending && (
+              <div className="insurance-ctrl">
+                <span className="ins-ctrl-title">Insurance? (max ${maxInsurance})</span>
+                <div className="ins-ctrl-row">
+                  <button className="sb-btn"
+                    onClick={() => setInsuranceAmt(a => Math.max(0, a - 5))}
+                    disabled={insuranceAmt <= 0}>−</button>
+                  <span className="ins-amt">${insuranceAmt}</span>
+                  <button className="sb-btn"
+                    onClick={() => setInsuranceAmt(a => Math.min(maxInsurance, a + 5))}
+                    disabled={insuranceAmt >= maxInsurance}>+</button>
+                  <button className="btn-ghost dock-btn"
+                    onClick={() => { send({ type: 'set_insurance', amount: 0 }); setInsuranceAmt(0); }}>
+                    No
+                  </button>
+                  <button className="btn-ready dock-btn" disabled={insuranceAmt === 0}
+                    onClick={() => { send({ type: 'set_insurance', amount: insuranceAmt }); setInsuranceAmt(0); }}>
+                    Insure ${insuranceAmt}
+                  </button>
+                </div>
+              </div>
+            )}
+
+            {phase === 'insurance' && !insurancePending && (
+              <p className="dock-status">{me?.insurance_done ? 'Waiting for others…' : 'Dealer shows Ace'}</p>
+            )}
+
+            {/* Result */}
             {phase === 'result' && (
               isHost
-                ? <button className="btn-deal" style={{ width: '100%' }}
-                    onClick={() => send({ type: 'new_round' })}>New Round</button>
-                : <p className="waiting-turn-msg">Waiting for host to start a new round…</p>
+                ? <button className="btn-deal dock-btn" onClick={() => send({ type: 'new_round' })}>New Round</button>
+                : <p className="dock-status">Waiting for host to start a new round…</p>
             )}
 
           </div>
-        </div>
 
+          {/* Center zone: chip rack */}
+          <div className="dock-zone dock-center">
+            <div className={`chip-rack chip-rack-row${isBetting ? '' : ' chip-rack-dim'}`}>
+              {CHIP_DEFS.map(({ value, cls }) => (
+                <button key={value}
+                  className={`chip ${cls}${selectedChip === value ? ' chip-selected' : ''}`}
+                  onClick={() => setSelectedChip(value)}
+                  onPointerDown={(e) => {
+                    if (!isBetting) return;
+                    setSelectedChip(value);
+                    dragStateRef.current = {
+                      value, cls, startX: e.clientX, startY: e.clientY, active: false,
+                    };
+                  }}
+                  disabled={value > (me?.balance ?? 0) || !isBetting}>
+                  <span className="chip-label">${value}</span>
+                </button>
+              ))}
+            </div>
+          </div>
+
+          {/* Right zone: side bet results + bet total */}
+          <div className="dock-zone dock-right">
+            {phase === 'result' && me?.side_bet_results && (
+              <div className="sidebet-results">
+                {me.side_bet_results.perfect_pairs && (
+                  <span className={me.side_bet_results.perfect_pairs.win ? 'sb-res-win' : 'sb-res-lose'}>
+                    PP: {me.side_bet_results.perfect_pairs.win
+                      ? `+$${me.side_bet_results.perfect_pairs.payout} · ${me.side_bet_results.perfect_pairs.label ?? ''}`
+                      : `-$${Math.abs(me.side_bet_results.perfect_pairs.payout)}`}
+                  </span>
+                )}
+                {me.side_bet_results.twenty_one_plus_three && (
+                  <span className={me.side_bet_results.twenty_one_plus_three.win ? 'sb-res-win' : 'sb-res-lose'}>
+                    21+3: {me.side_bet_results.twenty_one_plus_three.win
+                      ? `+$${me.side_bet_results.twenty_one_plus_three.payout} · ${me.side_bet_results.twenty_one_plus_three.label ?? ''}`
+                      : `-$${Math.abs(me.side_bet_results.twenty_one_plus_three.payout)}`}
+                  </span>
+                )}
+                {me.side_bet_results.insurance && (
+                  <span className={me.side_bet_results.insurance.win ? 'sb-res-win' : 'sb-res-lose'}>
+                    Insurance: {me.side_bet_results.insurance.win
+                      ? `+$${me.side_bet_results.insurance.payout}`
+                      : `-$${Math.abs(me.side_bet_results.insurance.payout)}`}
+                  </span>
+                )}
+              </div>
+            )}
+
+            {isBetting && (me?.current_bet ?? 0) > 0 && (
+              <div className="dock-bet-info">
+                <span className="dock-bet-lbl">Bet</span>
+                <span className="dock-bet-amt">${me?.current_bet ?? 0}</span>
+              </div>
+            )}
+          </div>
+
+        </div>
       </div>
 
-      {/* ── Drag ghost chip (follows pointer, pointer-events: none) ─── */}
+      {/* Drag ghost chip */}
       {dragChip && (
         <div
           className={`chip ${dragChip.cls} chip-ghost`}
